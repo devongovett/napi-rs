@@ -1,3 +1,5 @@
+use std::process::Command;
+
 use phf::phf_map;
 use serde::{ser::SerializeMap, Serialize, Serializer};
 
@@ -24,7 +26,7 @@ pub const DEFAULT_TARGETS: &[&str] = &[
 ];
 
 #[allow(non_camel_case_types)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NodeArch {
   x32,
   x64,
@@ -96,7 +98,7 @@ impl Serialize for NodeArch {
 }
 
 #[allow(non_camel_case_types)]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NodePlatform {
   darwin,
   freebsd,
@@ -146,9 +148,53 @@ pub struct TargetDetail {
   pub abi: Option<String>,
 }
 
-impl From<&str> for TargetDetail {
-  fn from(triple: &str) -> TargetDetail {
-    let parts = triple.split('-').collect::<Vec<_>>();
+pub fn get_system_default_target() -> String {
+  let mut output = Command::new("rustup")
+    .args(&["show", "active-toolchain"])
+    .output()
+    .expect("Failed to get rustup default toolchain");
+
+  let active_toolchain = unsafe {
+    String::from_raw_parts(
+      output.stdout.as_mut_ptr(),
+      output.stdout.len(),
+      output.stdout.capacity(),
+    )
+  };
+
+  let mut output = Command::new("rustup")
+    .args(&["target", "list"])
+    .output()
+    .expect("Failed to get rustup toolchain list");
+
+  unsafe {
+    let output = String::from_raw_parts(
+      output.stdout.as_mut_ptr(),
+      output.stdout.len(),
+      output.stdout.capacity(),
+    );
+
+    output
+      .lines()
+      .map(|line| line.trim().trim_end_matches("(installed)").trim())
+      .find(|target| active_toolchain.contains(target))
+      .expect("Failed to get rustup default target")
+      .to_owned()
+  }
+}
+
+impl TargetDetail {
+  pub fn system_default() -> Self {
+    TargetDetail::from(&get_system_default_target())
+  }
+}
+
+impl<T> From<T> for TargetDetail
+where
+  T: AsRef<str>,
+{
+  fn from(triple: T) -> TargetDetail {
+    let parts = triple.as_ref().split('-').collect::<Vec<_>>();
     let (cpu, sys, abi) = if parts.len() == 2 {
       (parts[0], parts[2], None)
     } else {
@@ -170,11 +216,30 @@ impl From<&str> for TargetDetail {
   }
 }
 
-#[derive(Clone, Debug, Default)]
+impl PartialEq for TargetDetail {
+  fn eq(&self, other: &Self) -> bool {
+    self.platform_abi == other.platform_abi
+      && self.arch == other.arch
+      && self.platform == other.platform
+      && self.abi == other.abi
+  }
+}
+
+#[derive(Clone, Debug)]
 pub struct GithubWorkflowConfig {
   pub host: &'static str,
   pub docker_image: Option<&'static str>,
   pub setup: Option<&'static str>,
+}
+
+impl Default for GithubWorkflowConfig {
+  fn default() -> Self {
+    Self {
+      host: "ubuntu-latest",
+      docker_image: None,
+      setup: None,
+    }
+  }
 }
 
 impl Serialize for GithubWorkflowConfig {
@@ -274,7 +339,8 @@ pub struct Target {
 impl Target {
   pub fn new(triple: &str) -> Self {
     let detail = TargetDetail::from(triple);
-    let config = TARGET_CONFIG_MAP.get(triple).unwrap().clone();
+    let config = TARGET_CONFIG_MAP.get(triple).cloned().unwrap_or_default();
+
     Self {
       triple: triple.to_owned(),
       detail,

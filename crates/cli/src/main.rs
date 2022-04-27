@@ -37,5 +37,9 @@ macro_rules! run_command {
 fn main() {
   let cli = Cli::parse();
 
+  // eat the error of setting logger
+  if log::set_boxed_logger(Box::new(util::SimpleLogger)).is_err() {}
+  log::set_max_level(log::LevelFilter::Info);
+
   run_command!(cli.command, New, Build);
 }
